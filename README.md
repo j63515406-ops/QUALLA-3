@@ -68,7 +68,7 @@ pytest                 # tests de estrategia y gestión
 ```
 
 ## Comandos de Telegram
-`/watchlist` (candidatas ahora) · `/scan` (resumen y motivos de descarte) · `/status` · `/positions` · `/pause` (no abre nuevas) · `/resume` · `/closeall` (cierra todo)
+`/watchlist` (candidatas ahora) · `/debug TRX` (qué volumen lee el bot de BingX) · `/scan` (resumen y motivos de descarte) · `/status` · `/positions` · `/pause` (no abre nuevas) · `/resume` · `/closeall` (cierra todo)
 
 ## Variables principales
 | Variable | Defecto | Descripción |
@@ -80,7 +80,9 @@ pytest                 # tests de estrategia y gestión
 | `MAX_TRADES_PER_DAY` / `DAILY_LOSS_LIMIT_PCT` | 6 / 3 | Frenos diarios (UTC) |
 | `MIN_SCORE` | 65 | Score mínimo para **ejecutar** (paper/live) |
 | `ALERT_MIN_SCORE` | 50 | Score mínimo para **avisar** por Telegram |
-| `WATCH_DIST_PCT` / `WATCH_MAX` | 1.5 / 8 | Distancia máx. al gatillo para ser candidata / máx. mostradas |
+| `WATCH_DIST_PCT` / `WATCH_DIST_ADR` | 1.5 / 0.25 | Candidata si está a ≤ el **mayor** de: X% o X·ADR del gatillo (escala con la volatilidad) |
+| `WATCH_MAX` | 8 | Máx. candidatas mostradas |
+| `API_RATE_LIMIT_MS` | 250 | Pausa mínima entre peticiones a BingX. Súbela (400-500) si ves «BingX limitó N peticiones» |
 | `WATCH_REALERT_MIN` | 360 | No repite el aviso de la misma candidata antes de X min |
 | `DIGEST_MIN` | 60 | Resumen periódico del escáner (0 = apagado) |
 | `MIN_24H_VOLUME_USD` | 3000000 | Liquidez mínima por moneda |
@@ -99,7 +101,8 @@ bot/main.py        hilos: escaneo/gestión/cmd  tests/             pruebas con d
 1. ¿Recibiste el mensaje «bot iniciado»? **No** → mira los logs de Railway: `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` mal, no pulsaste **/start** en tu bot, o BingX bloquea la región (cambia a Europa/Asia) y el proceso se reinicia en bucle.
 2. **Sí**, pero sin avisos → escribe `/scan`. Verás cuántas monedas pasan cada filtro y el motivo principal de descarte; con eso ajustas `ADR_MIN_PCT`, `RUNUP_MIN_PCT`, `CONSOL_RANGE_ADR`, `WATCH_DIST_PCT`…
 3. En los logs, la línea `Escaneo …s: N líquidos, N analizados…` confirma que el escáner trabaja. Si aparece `Errores de datos en N símbolos`, el problema es la conexión con BingX.
-4. No uses el **mismo token de Telegram** en dos bots: ambos hacen `getUpdates` y se pisan (error 409 en los logs).
+4. Error `100410` / «请稍后重试» en los logs = BingX limita las peticiones (Railway comparte IP). El bot reintenta solo; si persiste, sube `API_RATE_LIMIT_MS`.
+5. No uses el **mismo token de Telegram** en dos bots: ambos hacen `getUpdates` y se pisan (error 409 en los logs).
 
 ## Limitaciones conocidas
 - La integración con BingX (órdenes stop, modo hedge, demo) **no se ha probado contra el exchange real**; verifícala primero en la cuenta demo con importes mínimos y revisa que cada entrada tenga su stop en BingX.

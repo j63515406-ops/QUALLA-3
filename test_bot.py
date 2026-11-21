@@ -216,7 +216,7 @@ class FakeScanEx:
         return {s: {"quoteVolume": 5e6, "percentage": 1.0} for s in self.data}
 
     def fetch_ohlcv(self, sym, tf, limit=100):
-        d, h, m = self.data.get(sym, self.data["WAIT/USDT:USDT"])
+        d, h, m = self.data.get(sym) or next(iter(self.data.values()))
         df = {"1d": d, "1h": h, "15m": m}[tf]
         return df.values.tolist()
 
@@ -297,3 +297,60 @@ def test_telegram_retries_as_plain_text_when_html_is_rejected(monkeypatch):
     assert n.send("<b>x</b> a &lt; b") is True
     assert "parse_mode" in calls[0] and "parse_mode" not in calls[1]
     assert calls[1]["text"] == "x a < b"
+
+
+# ───────────── límite de BingX (100410), distancia por ADR, /debug ─────────────
+RATE_ERR = 'bingx {"code":100410,"msg":"请稍后重试"}'
+
+
+def test_scan_retries_when_bingx_rate_limits():
+    d, h = daily_trend(), _with_open_hour(hourly())
+    m = _with_open_candle(m15(last_open=1.6, last_close=1.6, last_vol=100))
+
+    class Flaky(FakeScanEx):
+        fails = 2
+        def fetch_ohlcv(self, sym, tf, limit=100):
+            if tf == "15m" and Flaky.fails > 0:
+                Flaky.fails -= 1
+                raise Exception(RATE_ERR)
+            return super().fetch_ohlcv(sym, tf, limit)
+
+    sc = Scanner(Flaky({"WAIT/USDT:USDT": (d, h, m)}), CFG)
+    waits = []
+    sc._sleep = waits.append                                   # sin esperar de verdad
+    res = sc.scan()
+    assert res.stats["errores de datos"] == 0                  # se recuperó solo
+    assert res.stats["peticiones reintentadas por límite de BingX"] == 2 and waits == [2.0, 5.0]
+    assert [c.symbol for c in res.candidates] == ["WAIT/USDT:USDT"]
+
+
+def test_scan_gives_up_after_retries_and_reports():
+    class AlwaysLimited(FakeScanEx):
+        def fetch_ohlcv(self, sym, tf, limit=100):
+            raise Exception(RATE_ERR)
+    d, h = daily_trend(), _with_open_hour(hourly())
+    sc = Scanner(AlwaysLimited({"WAIT/USDT:USDT": (d, h, _with_open_candle(m15(last_open=1.6, last_close=1.6)))}), CFG)
+    sc._sleep = lambda s: None
+    res = sc.scan()
+    assert res.stats["errores de datos"] == 1 and "100410" in res.errors[0]
+
+
+def test_watch_distance_scales_with_adr():
+    d, h = daily_trend(rng=0.05), hourly()                     # ADR ≈ 10%
+    # precio ~2.3% bajo el gatillo: fuera del 1.5% fijo, dentro de 0.25 x ADR (≈2.5%)
+    m = m15(last_open=1.57, last_close=1.57, last_vol=100)
+    c = _cands(d, h, m)
+    assert c and 1.5 < c[0].dist_pct <= 0.25 * c[0].adr
+    far = []
+    ctx = daily_ctx(d)
+    strict = Config(mode="paper", watch_dist_adr=0.0)
+    assert not watch_candidates("T", {"long": 30.0}, ctx, h, m, strict, None, far)
+    assert far and far[0][0] == "T" and far[0][1] == "long" and far[0][2] > 1.5
+
+
+def test_debug_command_shows_raw_volumes():
+    d, h = daily_trend(), _with_open_hour(hourly())
+    sc = Scanner(FakeScanEx({"TRX/USDT:USDT": (d, h, _with_open_candle(m15(last_open=1.6, last_close=1.6, last_vol=100)))}), CFG)
+    txt = botmain.fmt_debug(sc, "trx")
+    assert "TRX/USDT:USDT" in txt and "RVOL calculado" in txt and "UTC" in txt
+    assert "Uso:" in botmain.fmt_debug(sc, "")

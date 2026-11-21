@@ -185,10 +185,11 @@ def _consolidation_break(sym, side, ctx, h, m, a1h, cfg, stats=None):
     return Signal(sym, side, name, entry, stop, min(100.0, score), reasons, a1h)
 
 
-def watch_candidates(sym, priors: dict, ctx, h, m, cfg, stats=None) -> list:
+def watch_candidates(sym, priors: dict, ctx, h, m, cfg, stats=None, far=None) -> list:
     """
     Candidatas a explotar: pasan el filtro diario, tienen la caja de consolidación válida y el
-    precio está a <= WATCH_DIST_PCT del gatillo (sin haberlo roto aún).
+    precio está cerca del gatillo (<= max(WATCH_DIST_PCT, WATCH_DIST_ADR x ADR)) sin haberlo roto aún.
+    `far` (lista opcional) recoge las cajas válidas que aún están lejos: (símbolo, lado, dist%, gatillo).
     priors = {side: movimiento_previo%} de los lados que ya pasaron trend_gate.
     """
     if len(h) < 60 or len(m) < 30:
@@ -198,6 +199,7 @@ def watch_candidates(sym, priors: dict, ctx, h, m, cfg, stats=None) -> list:
         return []
     price = float(m.iloc[-1]["close"])
     rv = rvol(m, 20)
+    limit = max(cfg.watch_dist_pct, cfg.watch_dist_adr * ctx["adr"])
     out = []
     for side, prior in priors.items():
         long = side == "long"
@@ -210,8 +212,10 @@ def watch_candidates(sym, priors: dict, ctx, h, m, cfg, stats=None) -> list:
         if dist <= 0:
             _bump(stats, "caja válida ya rota")
             continue
-        if dist > cfg.watch_dist_pct:
+        if dist > limit:
             _bump(stats, "caja válida pero lejos del gatillo")
+            if far is not None:
+                far.append((sym, side, dist, trigger))
             continue
         stop = _stop(side, trigger, b["lo"] if long else b["hi"], a1h, cfg)
         if stop is None:
@@ -222,7 +226,7 @@ def watch_candidates(sym, priors: dict, ctx, h, m, cfg, stats=None) -> list:
             + max(0.0, 1 - b["rng"] / b["max_rng"]) * 20
             + min(15, max(0.0, (ctx["adr"] - cfg.adr_min) * 2))
             + min(10, max(0.0, (prior - cfg.runup_min) / 3))
-            + max(0.0, 1 - dist / cfg.watch_dist_pct) * 15
+            + max(0.0, 1 - dist / limit) * 15
         )
         out.append(Candidate(sym, side, "Breakout" if long else "Breakdown", trigger, stop, price,
                              dist, ctx["adr"], b["rng"], prior, rv, min(100.0, score)))

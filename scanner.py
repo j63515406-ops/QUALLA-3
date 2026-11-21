@@ -7,6 +7,8 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 
+import ccxt
+
 from indicators import rvol, to_df
 from strategies import (adjust_score, btc_regime, daily_ctx, evaluate, trend_gate,
                         watch_candidates, why_no_trend)
@@ -14,11 +16,18 @@ from strategies import (adjust_score, btc_regime, daily_ctx, evaluate, trend_gat
 BTC = "BTC/USDT:USDT"
 DAILY_TTL = 1200     # s: la vela diaria cambia despacio, no hace falta pedirla en cada escaneo
 HOURLY_TTL = 600     # s: velas 1h cerradas para candidatas (para señales se piden frescas)
+RETRY_WAITS = (2.0, 5.0, 10.0)   # s de espera creciente si BingX limita las peticiones
 log = logging.getLogger("scanner")
 
 # Claves del embudo (el resto de claves del Counter son motivos de descarte)
 FUNNEL_KEYS = ("analizados", "filtro diario ok", "con volumen ahora", "cajas de consolidación válidas",
-               "errores de datos")
+               "errores de datos", "peticiones reintentadas por límite de BingX")
+
+
+def _transient(e: Exception) -> bool:
+    """Errores temporales: límite de peticiones de BingX (code 100410), red, timeouts."""
+    msg = str(e)
+    return "100410" in msg or "请稍后重试" in msg or isinstance(e, ccxt.NetworkError)
 
 
 @dataclass
@@ -26,6 +35,7 @@ class ScanResult:
     signals: list = field(default_factory=list)
     candidates: list = field(default_factory=list)
     movers: list = field(default_factory=list)       # (símbolo, rvol15m, %24h)
+    far: list = field(default_factory=list)         # cajas válidas aún lejos: (símbolo, lado, dist%, gatillo)
     regime: str = "neutral"
     stats: Counter = field(default_factory=Counter)
     errors: list = field(default_factory=list)
@@ -43,9 +53,22 @@ class Scanner:
         self.cfg = cfg
         self.exclude = re.compile(cfg.exclude_regex) if cfg.exclude_regex else None
         self._cache = {}
+        self.retries = 0
+        self._sleep = time.sleep
+
+    def _call(self, fn, *a, **k):
+        """Llama al exchange reintentando con espera creciente si el error es temporal."""
+        for i in range(len(RETRY_WAITS) + 1):
+            try:
+                return fn(*a, **k)
+            except Exception as e:
+                if i == len(RETRY_WAITS) or not _transient(e):
+                    raise
+                self.retries += 1
+                self._sleep(RETRY_WAITS[i])
 
     def liquid_symbols(self):
-        tickers = self.ex.fetch_tickers()
+        tickers = self._call(self.ex.fetch_tickers)
         out = []
         for sym, t in tickers.items():
             mk = self.ex.markets.get(sym)
@@ -63,7 +86,7 @@ class Scanner:
         return out[: self.cfg.max_symbols]
 
     def _df(self, sym, tf, limit):
-        return to_df(self.ex.fetch_ohlcv(sym, tf, limit=limit))
+        return to_df(self._call(self.ex.fetch_ohlcv, sym, tf, limit=limit))
 
     def _get(self, sym, tf, limit, ttl, fresh=False, drop_last=False):
         """Velas con caché corta. fresh=True fuerza descarga (símbolos con señal potencial)."""
@@ -85,6 +108,7 @@ class Scanner:
 
     def scan(self) -> ScanResult:
         t0, cfg = time.time(), self.cfg
+        self.retries = 0
         res = ScanResult()
         self._cache = {k: v for k, v in self._cache.items() if t0 - v[0] < 3600}
         universe = self.liquid_symbols()
@@ -132,7 +156,7 @@ class Scanner:
                         adjust_score(s, res.regime, self.funding(sym))
                         res.signals.append(s)
                 if priors:                            # consolidando cerca del gatillo: candidata
-                    res.candidates.extend(watch_candidates(sym, priors, ctx, h, m, cfg, st))
+                    res.candidates.extend(watch_candidates(sym, priors, ctx, h, m, cfg, st, res.far))
             except Exception as e:                    # un símbolo roto no debe parar el escaneo...
                 st["errores de datos"] += 1           # ...pero ya NO se silencia
                 if len(res.errors) < 3:
@@ -141,6 +165,9 @@ class Scanner:
         res.signals.sort(key=lambda s: s.score, reverse=True)
         res.candidates.sort(key=lambda c: c.score, reverse=True)
         res.movers.sort(key=lambda x: x[1], reverse=True)
+        res.far.sort(key=lambda x: x[2])
+        if self.retries:
+            st["peticiones reintentadas por límite de BingX"] = self.retries
         res.secs = time.time() - t0
         log.info("Escaneo %.0fs: %d líquidos, %d analizados, %d filtro diario, %d cajas válidas, "
                  "%d candidatas, %d señales | BTC %s", res.secs, res.universe, st["analizados"],

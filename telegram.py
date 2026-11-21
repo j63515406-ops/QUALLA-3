@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import inspect
 import logging
 import re
 import time
@@ -76,7 +77,8 @@ class Notifier:
                         continue
                     fn = handlers.get(parts[0].split("@")[0].lower())
                     if fn:
-                        self.send(fn())
+                        n = len(inspect.signature(fn).parameters)   # comandos con argumento: /debug TRX
+                        self.send(fn(*parts[1:1 + n]))
             except Exception as e:
                 log.warning("poll error: %s", e)
                 stop.wait(5)

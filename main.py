@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from config import load_config
 from exchange import make_exchange
+from indicators import rvol
 from scanner import Scanner
 from state import State
 from telegram import Notifier
@@ -68,6 +69,9 @@ def fmt_digest(res, cfg) -> str:
         out.append("\n<b>Top candidatas</b> (/watchlist para el detalle):")
         out += [f"• {c.symbol} {c.side.upper()} gatillo {px(c.trigger)} (a {c.dist_pct:.2f}%)"
                 for c in res.candidates[:5]]
+    if res.far:
+        out.append("\n<b>Cajas válidas aún lejos del gatillo</b>:")
+        out += [f"• {s} {side.upper()} gatillo {px(t)} (a {d:.2f}%)" for s, side, d, t in res.far[:3]]
     if res.movers:
         out.append("\n<b>Con volumen ahora</b> (RVOL 15m · %24h):")
         out += [f"• {s} {rv:.1f}x · {p:+.1f}%" for s, rv, p in res.movers[:5]]
@@ -75,10 +79,38 @@ def fmt_digest(res, cfg) -> str:
     if rs:
         out.append("\n<b>Por qué se descartan las demás:</b>")
         out += [f"• {k}: {v}" for k, v in rs]
+    n_retry = st["peticiones reintentadas por límite de BingX"]
+    if n_retry:
+        out.append(f"\n⏳ BingX limitó {n_retry} peticiones (el bot las reintentó con espera)")
     if st["errores de datos"]:
         out.append(f"\n⚠️ Errores de datos en {st['errores de datos']} símbolos. Ej.: "
                    + html.escape(res.errors[0] if res.errors else ""))
     return "\n".join(out)
+
+
+def fmt_debug(scanner, sym: str) -> str:
+    """Muestra qué volumen está leyendo el bot de BingX para un símbolo (para validar el RVOL)."""
+    if not sym:
+        return "Uso: /debug TRX   (o /debug TRX/USDT:USDT)"
+    s = sym.upper()
+    if "/" not in s:
+        s += "/USDT:USDT"
+    try:
+        m = scanner._df(s, "15m", 130).iloc[:-1]
+    except Exception as e:
+        return f"No pude leer {html.escape(s)}: {html.escape(str(e))[:200]}"
+    v = m["volume"]
+    base = v.iloc[-21:-1]
+    lines = [
+        f"🔎 <b>{html.escape(s)}</b> · velas 15m cerradas",
+        f"Volumen última: {v.iloc[-1]:.6g} | media 20 previas: {base.mean():.6g} | "
+        f"mediana: {base.median():.6g} | mín: {base.min():.6g}",
+        f"RVOL calculado: {rvol(m, 20):.1f}x",
+    ]
+    for _, r in m.tail(6).iterrows():
+        hhmm = datetime.fromtimestamp(r["ts"] / 1000, timezone.utc).strftime("%H:%M")
+        lines.append(f"• {hhmm} UTC  cierre {px(r['close'])}  vol {r['volume']:.6g}")
+    return "\n".join(lines)
 
 
 def fmt_day(prev: dict) -> str:
@@ -176,12 +208,13 @@ def main():
     handlers = {
         "/watchlist": cmd_watchlist,
         "/scan": lambda: fmt_digest(last["res"], cfg),
+        "/debug": lambda sym="": fmt_debug(scanner, sym),
         "/status": trader.summary,
         "/positions": trader.positions_text,
         "/pause": cmd_pause,
         "/resume": cmd_resume,
         "/closeall": cmd_closeall,
-        "/help": lambda: "/watchlist /scan /status /positions /pause /resume /closeall",
+        "/help": lambda: "/watchlist /scan /debug SIMBOLO /status /positions /pause /resume /closeall",
     }
 
     prev = st.ensure_day(trader.equity)

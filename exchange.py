@@ -6,6 +6,7 @@ import ccxt
 def make_exchange(cfg, auth: bool):
     params = {
         "enableRateLimit": True,
+        "rateLimit": cfg.api_rate_limit_ms,
         "timeout": 20000,
         "options": {"defaultType": "swap"},
     }

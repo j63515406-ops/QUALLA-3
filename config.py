@@ -48,6 +48,7 @@ class Config:
     fee_pct: float = 0.05
 
     # escaneo
+    api_rate_limit_ms: int = 250    # pausa mínima entre peticiones a BingX (evita el error 100410)
     scan_interval: int = 300
     manage_interval: int = 15
     trail_interval: int = 300
@@ -65,6 +66,7 @@ class Config:
 
     # candidatas (watchlist) y resúmenes
     watch_dist_pct: float = 1.5     # candidata si el precio está a <= X% del gatillo
+    watch_dist_adr: float = 0.25    # ...o a <= X * ADR (se usa el mayor de los dos): escala con la volatilidad
     watch_max: int = 8              # máx. candidatas mostradas
     watch_realert_min: int = 360    # no repetir el aviso de la misma candidata antes de X min
     digest_min: int = 60            # resumen periódico del escáner (0 = desactivado)
@@ -116,6 +118,7 @@ def load_config() -> Config:
         daily_loss_pct=_f("DAILY_LOSS_LIMIT_PCT", d.daily_loss_pct),
         paper_equity=_f("PAPER_EQUITY", d.paper_equity),
         fee_pct=_f("FEE_PCT", d.fee_pct),
+        api_rate_limit_ms=_i("API_RATE_LIMIT_MS", d.api_rate_limit_ms),
         scan_interval=_i("SCAN_INTERVAL_SEC", d.scan_interval),
         manage_interval=_i("MANAGE_INTERVAL_SEC", d.manage_interval),
         trail_interval=_i("TRAIL_INTERVAL_SEC", d.trail_interval),
@@ -126,6 +129,7 @@ def load_config() -> Config:
         min_score=_f("MIN_SCORE", d.min_score),
         alert_min_score=_f("ALERT_MIN_SCORE", d.alert_min_score),
         watch_dist_pct=_f("WATCH_DIST_PCT", d.watch_dist_pct),
+        watch_dist_adr=_f("WATCH_DIST_ADR", d.watch_dist_adr),
         watch_max=_i("WATCH_MAX", d.watch_max),
         watch_realert_min=_i("WATCH_REALERT_MIN", d.watch_realert_min),
         digest_min=_i("DIGEST_MIN", d.digest_min),
